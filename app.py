@@ -7,10 +7,11 @@ import requests
 
 app = Flask(__name__)
 
-JPX_CSV_URL = "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xls"
-LOCAL_CSV = "jpx_list.xls"
 
-NIKKEI225_URL = "https://indexes.nikkei.co.jp/nkave/index/component?idx=nk225"
+
+# ✅ 株探から銘柄を取得する新しい設定
+LOCAL_CSV = "jpx_list.xlsx"
+NIKKEI225_URL = "https://nikkei.co.jp"
 
 
 def update_jpx_list():
@@ -21,54 +22,94 @@ def update_jpx_list():
         if mtime == today:
             return
 
-    print("JPX銘柄一覧をダウンロード中...")
-    r = requests.get(JPX_CSV_URL)
-    r.raise_for_status()
-    with open(LOCAL_CSV, "wb") as f:
-        f.write(r.content)
-    print("JPX銘柄一覧更新完了")
+    print("代替ソース（株探）から東証上場銘柄の一覧を取得中...")
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    }
+
+    all_stocks = []
+    page = 1
+
+    try:
+        while True:
+            url = "https://kabutan.jp"
+            params = {"page": page}
+
+            res = requests.get(url, headers=headers, params=params, timeout=10)
+            res.raise_for_status()
+
+            soup = BeautifulSoup(res.text, "html.parser")
+
+            table = soup.find("table", class_="stocks")
+            if not table:
+                break
+
+            rows = table.find_all("tr")[1:]
+            if not rows:
+                break
+
+            for row in rows:
+                cols = row.find_all("td")
+                if len(cols) >= 3:
+                    # ✅ 各列からテキストを正しく抽出するように修正
+                    code = cols[0].text.strip()
+                    name = cols[1].text.strip()
+                    market = cols[2].text.strip()
+
+                    all_stocks.append(
+                        {
+                            "コード": code,
+                            "銘柄名": name,
+                            "市場・商品区分": market,
+                            "17業種区分": "その他",
+                        }
+                    )
+
+            print(f"{page}ページ目を取得完了... (現在 {len(all_stocks)} 銘柄)")
+            page += 1
+            time.sleep(0.5)
+
+            if page > 60:
+                break
+
+        if not all_stocks:
+            raise Exception("銘柄データを1件も取得できませんでした。")
+
+        df = pd.DataFrame(all_stocks)
+        df.to_excel(LOCAL_CSV, index=False)
+        print("銘柄一覧の代替作成が完了しました。")
+
+    except Exception as e:
+        print(f"⚠️ 代替データの取得中にエラーが発生しました: {e}")
 
 
 def load_jpx_list():
     update_jpx_list()
 
-    df = pd.read_excel(LOCAL_CSV)
+    if os.path.exists(LOCAL_CSV):
+        df = pd.read_excel(LOCAL_CSV)
+    elif os.path.exists("jpx_list.xls"):
+        df = pd.read_excel("jpx_list.xls")
+    else:
+        raise FileNotFoundError(
+            "銘柄リストファイルが見つかりません。ネット接続を確認してください。"
+        )
 
-    # 現在のExcelファイルの実際の列名を出力して確認できるようにします（デバッグ用）
-    print("JPX Excelの実際の列名:", df.columns.tolist())
+    df = df.rename(
+        columns={
+            "コード": "code",
+            "銘柄名": "name",
+            "市場・商品区分": "market",
+            "17業種区分": "sector17",
+        }
+    )
 
-    # 列名の表記揺れに対応（部分一致で列を探すように強化）
-    rename_dict = {}
-    for col in df.columns:
-        if "コード" in str(col):
-            rename_dict[col] = "code"
-        elif "銘柄名" in str(col):
-            rename_dict[col] = "name"
-        elif "市場" in str(col):
-            rename_dict[col] = "market"
-        elif "17業種" in str(col):
-            rename_dict[col] = "sector17"
-
-    df = df.rename(columns=rename_dict)
-
-    # 必須の列が存在するかチェック
-    if "sector17" not in df.columns:
-        # もし「17業種」が見つからない場合、代わりに「33業種」などの列を代替として探す
-        for col in df.columns:
-            if "業種" in str(col) and col != "code":
-                df = df.rename(columns={col: "sector17"})
-                break
-        else:
-            # それでも無ければ一時的に「不明」として列を作る（エラーで画面を白くさせないため）
-            df["sector17"] = "その他"
-
-    # 以下は元の処理を安全に継続
     df["code"] = df["code"].astype(str).str.zfill(4)
     df["sector17"] = df["sector17"].astype(str).str.strip()
 
     df["sector17"] = df["sector17"].replace(
-        ["", "_", "-", "‐", "–", "—", "None", "nan", "NaN", "　"],
-        "その他"
+        ["", "_", "-", "‐", "–", "—", "None", "nan", "NaN", "　"], "その他"
     )
 
     df = df.sort_values(by="code", ascending=True)
@@ -78,17 +119,8 @@ def load_jpx_list():
 
 
 
-    df["code"] = df["code"].astype(str).str.zfill(4)
-    df["sector17"] = df["sector17"].astype(str).str.strip()
 
-    df["sector17"] = df["sector17"].replace(
-        ["", "_", "-", "‐", "–", "—", "None", "nan", "NaN", "　"],
-        "その他"
-    )
 
-    df = df.sort_values(by="code", ascending=True)
-
-    return df[["code", "name", "market", "sector17"]]
 
 
 from bs4 import BeautifulSoup
@@ -127,7 +159,6 @@ def load_nikkei225_list():
     "9502", "9503", "9531", "9532", "9602", "9735", "9766", "9843",
     "9983", "9984"
     ]
-
 
 
 NIKKEI225_CODES = load_nikkei225_list()
@@ -178,12 +209,6 @@ def index():
 <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
 
 <style>
-.ad-banner img {
-    height: 100%;
-    width: auto;
-    object-fit: cover;
-}
-
     body {
         margin: 0;
         padding: 0;
@@ -191,14 +216,6 @@ def index():
         color: #d1d4dc;
         font-family: sans-serif;
     }
-
-#app {
-    display: grid;
-    grid-template-columns: 1fr 1fr;   /* 横に2列 */
-    gap: 10px;                        /* チャート同士の余白 */
-    width: 100%;
-}
-
 
     /* ★ fixed → sticky に変更 */
     #filter-bar {
@@ -313,17 +330,18 @@ def index():
         cursor: pointer;
     }
 
-.ad-banner {
-    width: 100%;
-    background: #2a2e39;
-    border-radius: 6px;
-    margin: 10px;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    color: #aaa;
-    font-size: 14px;
-}
+    .ad-banner {
+        width: 100%;
+        height: 80px;
+        background: #2a2e39;
+        border-radius: 6px;
+        margin: 10px;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        color: #aaa;
+        font-size: 14px;
+    }
 
     #loading {
         text-align: center;
@@ -434,7 +452,7 @@ def index():
 
     <div id="interval-right">
         <a id="notice-link" class="pc-like-button">注意事項▼</a>
-        <a id="pc-link" href="https://japan-stock-chart.onrender.com/">スマホ画面</a>
+        <a id="pc-link" href="https://japan-stock-chart-pc.onrender.com/">PC画面</a>
     </div>
 </div>
 
@@ -657,8 +675,7 @@ document.getElementById("notice-link").addEventListener("click", () => {
 
                             function resizeChart() {
                                 const h = window.innerHeight * 0.23;
-				const marginRight = 80;  // ★ 右端の余白（2cm相当）
-				chart.resize((window.innerWidth - marginRight) / 2, h);
+                                chart.resize(area.clientWidth, h);
                             }
                             window.addEventListener('resize', resizeChart);
                             resizeChart();
@@ -725,11 +742,6 @@ document.getElementById("notice-link").addEventListener("click", () => {
             const ad = document.createElement('div');
             ad.className = 'ad-banner';
             ad.innerHTML = randomAd;
-
-	    // ★ チャートと同じ高さにする
-	    const h = window.innerHeight * 0.25;
-            const marginRight = 80;  // ★ 右端の余白（2cm相当）
-	    ad.style.height = `${h}px`;
 
             app.appendChild(ad);
         }
@@ -817,8 +829,7 @@ const chart = LightweightCharts.createChart(area, {
 
                 function resizeChart() {
                     const h = window.innerHeight * 0.23;
-                    const marginRight = 80;  // ★ 右端の余白（2cm相当）
-		    chart.resize((window.innerWidth - marginRight) / 2, h);
+                    chart.resize(area.clientWidth, h);
                 }
                 window.addEventListener('resize', resizeChart);
                 resizeChart();
