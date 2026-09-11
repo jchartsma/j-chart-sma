@@ -34,12 +34,49 @@ def load_jpx_list():
 
     df = pd.read_excel(LOCAL_CSV)
 
-    df = df.rename(columns={
-        "コード": "code",
-        "銘柄名": "name",
-        "市場・商品区分": "market",
-        "17業種区分": "sector17"
-    })
+    # 現在のExcelファイルの実際の列名を出力して確認できるようにします（デバッグ用）
+    print("JPX Excelの実際の列名:", df.columns.tolist())
+
+    # 列名の表記揺れに対応（部分一致で列を探すように強化）
+    rename_dict = {}
+    for col in df.columns:
+        if "コード" in str(col):
+            rename_dict[col] = "code"
+        elif "銘柄名" in str(col):
+            rename_dict[col] = "name"
+        elif "市場" in str(col):
+            rename_dict[col] = "market"
+        elif "17業種" in str(col):
+            rename_dict[col] = "sector17"
+
+    df = df.rename(columns=rename_dict)
+
+    # 必須の列が存在するかチェック
+    if "sector17" not in df.columns:
+        # もし「17業種」が見つからない場合、代わりに「33業種」などの列を代替として探す
+        for col in df.columns:
+            if "業種" in str(col) and col != "code":
+                df = df.rename(columns={col: "sector17"})
+                break
+        else:
+            # それでも無ければ一時的に「不明」として列を作る（エラーで画面を白くさせないため）
+            df["sector17"] = "その他"
+
+    # 以下は元の処理を安全に継続
+    df["code"] = df["code"].astype(str).str.zfill(4)
+    df["sector17"] = df["sector17"].astype(str).str.strip()
+
+    df["sector17"] = df["sector17"].replace(
+        ["", "_", "-", "‐", "–", "—", "None", "nan", "NaN", "　"],
+        "その他"
+    )
+
+    df = df.sort_values(by="code", ascending=True)
+
+    return df[["code", "name", "market", "sector17"]]
+
+
+
 
     df["code"] = df["code"].astype(str).str.zfill(4)
     df["sector17"] = df["sector17"].astype(str).str.strip()
@@ -92,6 +129,7 @@ def load_nikkei225_list():
     ]
 
 
+
 NIKKEI225_CODES = load_nikkei225_list()
 
 
@@ -140,6 +178,12 @@ def index():
 <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
 
 <style>
+.ad-banner img {
+    height: 100%;
+    width: auto;
+    object-fit: cover;
+}
+
     body {
         margin: 0;
         padding: 0;
@@ -147,6 +191,14 @@ def index():
         color: #d1d4dc;
         font-family: sans-serif;
     }
+
+#app {
+    display: grid;
+    grid-template-columns: 1fr 1fr;   /* 横に2列 */
+    gap: 10px;                        /* チャート同士の余白 */
+    width: 100%;
+}
+
 
     /* ★ fixed → sticky に変更 */
     #filter-bar {
@@ -261,18 +313,17 @@ def index():
         cursor: pointer;
     }
 
-    .ad-banner {
-        width: 100%;
-        height: 80px;
-        background: #2a2e39;
-        border-radius: 6px;
-        margin: 10px;
-        display: flex;
-        justify-content: center;
-        align-items: center;
-        color: #aaa;
-        font-size: 14px;
-    }
+.ad-banner {
+    width: 100%;
+    background: #2a2e39;
+    border-radius: 6px;
+    margin: 10px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    color: #aaa;
+    font-size: 14px;
+}
 
     #loading {
         text-align: center;
@@ -383,7 +434,7 @@ def index():
 
     <div id="interval-right">
         <a id="notice-link" class="pc-like-button">注意事項▼</a>
-        <a id="pc-link" href="https://j-chart-pc.onrender.com/">PC画面</a>
+        <a id="pc-link" href="https://japan-stock-chart.onrender.com/">スマホ画面</a>
     </div>
 </div>
 
@@ -606,7 +657,8 @@ document.getElementById("notice-link").addEventListener("click", () => {
 
                             function resizeChart() {
                                 const h = window.innerHeight * 0.23;
-                                chart.resize(area.clientWidth, h);
+				const marginRight = 80;  // ★ 右端の余白（2cm相当）
+				chart.resize((window.innerWidth - marginRight) / 2, h);
                             }
                             window.addEventListener('resize', resizeChart);
                             resizeChart();
@@ -673,6 +725,11 @@ document.getElementById("notice-link").addEventListener("click", () => {
             const ad = document.createElement('div');
             ad.className = 'ad-banner';
             ad.innerHTML = randomAd;
+
+	    // ★ チャートと同じ高さにする
+	    const h = window.innerHeight * 0.25;
+            const marginRight = 80;  // ★ 右端の余白（2cm相当）
+	    ad.style.height = `${h}px`;
 
             app.appendChild(ad);
         }
@@ -760,7 +817,8 @@ const chart = LightweightCharts.createChart(area, {
 
                 function resizeChart() {
                     const h = window.innerHeight * 0.23;
-                    chart.resize(area.clientWidth, h);
+                    const marginRight = 80;  // ★ 右端の余白（2cm相当）
+		    chart.resize((window.innerWidth - marginRight) / 2, h);
                 }
                 window.addEventListener('resize', resizeChart);
                 resizeChart();
